@@ -1,7 +1,21 @@
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, net, protocol } = require('electron');
+const { pathToFileURL } = require('url');
 const crypto = require('crypto');
 const path = require('path');
-const { describeMedia, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS } = require('./probe');
+const { describeMedia, mediaKind, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS, AUDIO_EXTENSIONS } = require('./probe');
+
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'media',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+      corsEnabled: true,
+    },
+  },
+]);
 
 const MEDIA_FILTERS = [
   {
@@ -28,7 +42,7 @@ async function importPaths(filePaths) {
   for (const filePath of filePaths) {
     try {
       const asset = await describeMedia(filePath);
-      assets.push({ id: crypto.randomUUID(), ...asset });
+      assets.push({ id: crypto.randomUUID(), ...asset, url: mediaUrl(asset.path) });
     } catch (error) {
       errors.push({
         name: path.basename(filePath),
@@ -38,6 +52,22 @@ async function importPaths(filePaths) {
   }
 
   return { canceled: false, assets, errors };
+}
+
+function mediaUrl(filePath) {
+  const url = new URL('media://local');
+  url.pathname = filePath;
+  return url.href;
+}
+
+function registerMediaProtocol() {
+  protocol.handle('media', (request) => {
+    const filePath = decodeURIComponent(new URL(request.url).pathname);
+    if (!path.isAbsolute(filePath) || !mediaKind(filePath)) {
+      return new Response('Not found', { status: 404 });
+    }
+    return net.fetch(pathToFileURL(filePath).href);
+  });
 }
 
 function registerMediaHandlers() {
@@ -80,6 +110,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  registerMediaProtocol();
   registerMediaHandlers();
   createWindow();
 });
