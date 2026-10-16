@@ -22,7 +22,7 @@ body {
 
 body {
   display: grid;
-  grid-template-rows: 40px minmax(0, 1fr) 200px;
+  grid-template-rows: 40px minmax(0, 1fr) 220px;
   background: var(--bg);
   color: var(--text);
   font-family: var(--font);
@@ -137,7 +137,8 @@ body {
   gap: 2px;
   padding: 8px;
   border-radius: 4px;
-  cursor: pointer;
+  cursor: grab;
+  user-select: none;
 }
 
 .media-item:hover,
@@ -256,42 +257,107 @@ body {
   color: var(--text);
 }
 
-.ruler {
-  display: flex;
-  justify-content: space-between;
-  margin-left: 72px;
-  padding: 0 8px 6px;
-  border-bottom: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.track {
+.timeline-body {
   display: grid;
   grid-template-columns: 72px minmax(0, 1fr);
   flex: 1;
   min-height: 0;
 }
 
+.track-labels {
+  display: grid;
+  grid-template-rows: 22px 44px 44px 44px;
+  border-right: 1px solid var(--line);
+}
+
 .track-label {
   display: flex;
   align-items: center;
   padding: 0 10px;
-  font-size: 12px;
+  border-bottom: 1px solid var(--line);
   color: var(--muted);
-  border-right: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.timeline-scroll {
+  overflow: auto hidden;
+  min-width: 0;
+}
+
+.time-area {
+  position: relative;
+  min-width: 100%;
+  height: 154px;
+}
+
+.ruler {
+  position: relative;
+  height: 22px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.ruler-mark {
+  position: absolute;
+  top: 6px;
+  transform: translateX(-50%);
+}
+
+.ruler-mark:first-child {
+  transform: none;
 }
 
 .track-lane {
   position: relative;
-  background:
-    linear-gradient(var(--accent), var(--accent)) 0 0 / 2px 100% no-repeat,
-    repeating-linear-gradient(
-      90deg,
-      transparent,
-      transparent 79px,
-      #2a2a2a 79px,
-      #2a2a2a 80px
-    );
+  height: 44px;
+  border-bottom: 1px solid var(--line);
   background-color: var(--panel-2);
+  background-image: repeating-linear-gradient(
+    90deg,
+    transparent,
+    transparent 79px,
+    #2a2a2a 79px,
+    #2a2a2a 80px
+  );
+}
+
+.track-lane.drag-over {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.clip {
+  position: absolute;
+  top: 6px;
+  height: 32px;
+  overflow: hidden;
+  padding: 0 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  line-height: 32px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.clip-video {
+  background: #2c5d9a;
+}
+
+.clip-overlay {
+  background: #2f6b45;
+}
+
+.clip-audio {
+  background: #8a5a28;
+}
+
+.playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 2;
 }

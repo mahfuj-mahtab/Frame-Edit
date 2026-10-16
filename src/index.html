@@ -61,16 +61,22 @@
           <span id="timecode" class="timecode">00:00:00</span>
         </div>
       </div>
-      <div class="ruler" aria-hidden="true">
-        <span>0s</span>
-        <span>5s</span>
-        <span>10s</span>
-        <span>15s</span>
-        <span>20s</span>
-      </div>
-      <div class="track">
-        <span class="track-label">Video</span>
-        <div class="track-lane"></div>
+      <div class="timeline-body">
+        <div class="track-labels">
+          <div class="ruler-spacer"></div>
+          <div class="track-label">Overlay</div>
+          <div class="track-label">Video</div>
+          <div class="track-label">Audio</div>
+        </div>
+        <div class="timeline-scroll" id="timeline-scroll">
+          <div class="time-area" id="time-area">
+            <div class="ruler" id="ruler"></div>
+            <div class="track-lane" data-track="overlay"></div>
+            <div class="track-lane" data-track="video"></div>
+            <div class="track-lane" data-track="audio"></div>
+            <div class="playhead" id="playhead"></div>
+          </div>
+        </div>
       </div>
     </section>
 
