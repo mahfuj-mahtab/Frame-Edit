@@ -1,0 +1,13 @@
+{
+  "name": "frameedit",
+  "version": "0.1.0",
+  "description": "Lightweight layered video editor",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron --no-sandbox ."
+  },
+  "devDependencies": {
+    "electron": "44.8.0",
+    "ffprobe-static": "^3.1.0"
+  }
+}

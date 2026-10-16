@@ -1,0 +1,255 @@
+:root {
+  color-scheme: dark;
+  --bg: #141414;
+  --panel: #1c1c1c;
+  --panel-2: #232323;
+  --line: #2e2e2e;
+  --text: #ececec;
+  --muted: #8d8d8d;
+  --accent: #4c8dff;
+  --font: system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  display: grid;
+  grid-template-rows: 40px minmax(0, 1fr) 200px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  overflow: hidden;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--line);
+  background: #101010;
+}
+
+.brand {
+  font-size: 13px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.runtime {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr) 260px;
+  min-height: 0;
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+}
+
+.pane:last-child {
+  border-right: none;
+  border-left: 1px solid var(--line);
+}
+
+.pane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.pane-title {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+
+.pane-head .pane-title {
+  border-bottom: none;
+}
+
+.import-button {
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid #3a3a3a;
+  border-radius: 4px;
+  background: #2a2a2a;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.import-button:hover {
+  border-color: var(--accent);
+}
+
+.import-button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.pane-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.media-list {
+  flex: 1;
+  margin: 0;
+  padding: 6px;
+  overflow: auto;
+  list-style: none;
+}
+
+.media-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  border-radius: 4px;
+}
+
+.media-item:hover {
+  background: #2a2a2a;
+}
+
+.media-name {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.media-meta {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.media-error {
+  margin: 0;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  color: #ff8d8d;
+  font-size: 12px;
+}
+
+.empty {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.empty p {
+  margin: 0;
+}
+
+.preview-body {
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: #101010;
+}
+
+.preview-frame {
+  width: min(100%, 860px);
+  aspect-ratio: 16 / 9;
+  display: grid;
+  place-items: center;
+  background: #0a0a0a;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+}
+
+.timeline-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 12px;
+}
+
+.timeline-head .pane-title {
+  border-bottom: none;
+}
+
+.timecode {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.ruler {
+  display: flex;
+  justify-content: space-between;
+  margin-left: 72px;
+  padding: 0 8px 6px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.track {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+}
+
+.track-label {
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--muted);
+  border-right: 1px solid var(--line);
+}
+
+.track-lane {
+  position: relative;
+  background:
+    linear-gradient(var(--accent), var(--accent)) 0 0 / 2px 100% no-repeat,
+    repeating-linear-gradient(
+      90deg,
+      transparent,
+      transparent 79px,
+      #2a2a2a 79px,
+      #2a2a2a 80px
+    );
+  background-color: var(--panel-2);
+}

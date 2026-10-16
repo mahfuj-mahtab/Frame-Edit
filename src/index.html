@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; style-src 'self'; script-src 'self'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>FrameEdit</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <span class="brand">FrameEdit</span>
+      <span id="runtime" class="runtime"></span>
+    </header>
+
+    <main class="workspace">
+      <section class="pane" aria-label="Media">
+        <div class="pane-head">
+          <h2 class="pane-title">Media</h2>
+          <button id="import-media" class="import-button" type="button">Import</button>
+        </div>
+        <div id="media-body" class="pane-body">
+          <div id="media-empty" class="empty">
+            <p>No media yet</p>
+          </div>
+          <ul id="media-list" class="media-list" hidden></ul>
+          <p id="media-error" class="media-error" hidden></p>
+        </div>
+      </section>
+
+      <section class="pane preview-pane" aria-label="Preview">
+        <h2 class="pane-title">Preview</h2>
+        <div class="pane-body preview-body">
+          <div class="preview-frame">
+            <span>Preview</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="pane" aria-label="Inspector">
+        <h2 class="pane-title">Inspector</h2>
+        <div class="pane-body empty">
+          <p>Nothing selected</p>
+        </div>
+      </section>
+    </main>
+
+    <section class="timeline" aria-label="Timeline">
+      <div class="timeline-head">
+        <h2 class="pane-title">Timeline</h2>
+        <span class="timecode">00:00:00</span>
+      </div>
+      <div class="ruler" aria-hidden="true">
+        <span>0s</span>
+        <span>5s</span>
+        <span>10s</span>
+        <span>15s</span>
+        <span>20s</span>
+      </div>
+      <div class="track">
+        <span class="track-label">Video</span>
+        <div class="track-lane"></div>
+      </div>
+    </section>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>
