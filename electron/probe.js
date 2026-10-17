@@ -6,6 +6,10 @@ const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bm
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.mkv', '.webm', '.avi', '.m4v']);
 const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.aac', '.m4a', '.ogg', '.flac']);
 
+function unpackedBinary(binary) {
+  return binary ? binary.replaceAll('app.asar', 'app.asar.unpacked') : binary;
+}
+
 function mediaKind(filePath) {
   const extension = path.extname(filePath).toLowerCase();
   if (IMAGE_EXTENSIONS.has(extension)) return 'image';
@@ -17,7 +21,7 @@ function mediaKind(filePath) {
 function runProbe(filePath) {
   return new Promise((resolve, reject) => {
     const child = spawn(
-      ffprobe.path,
+      unpackedBinary(ffprobe.path),
       ['-v', 'error', '-print_format', 'json', '-show_format', '-show_streams', filePath],
       { windowsHide: true },
     );
@@ -79,6 +83,7 @@ async function describeMedia(filePath) {
     duration: Number.isFinite(duration) ? duration : null,
     width: picture ? Number(picture.width) || null : null,
     height: picture ? Number(picture.height) || null : null,
+    hasAudio: Boolean(audio),
   };
 }
 
