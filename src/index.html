@@ -23,11 +23,19 @@
         <button id="open-project" class="tool-button" type="button">Open</button>
         <button id="save-project" class="tool-button" type="button">Save</button>
         <span class="v-rule" aria-hidden="true"></span>
+        <label class="field">Frame
+          <select id="frame-size">
+            <option value="landscape">Landscape</option>
+            <option value="shorts">Shorts</option>
+          </select>
+        </label>
         <label class="field">Size
           <select id="export-size">
             <option value="1080p">1080p</option>
             <option value="720p">720p</option>
             <option value="480p">480p</option>
+            <option value="shorts-1080">Shorts 1080</option>
+            <option value="shorts-720">Shorts 720</option>
           </select>
         </label>
         <label class="field">Quality
@@ -65,8 +73,9 @@
           <div class="preview-stage">
             <div class="preview-frame">
               <span id="preview-empty">Drop a clip on the timeline</span>
-              <video id="preview-video" playsinline></video>
-              <video id="overlay-video" class="is-underlay" playsinline></video>
+              <video id="preview-video" playsinline preload="auto"></video>
+              <video id="preview-video-b" class="is-underlay" playsinline preload="auto"></video>
+              <video id="overlay-video" class="is-underlay" playsinline preload="auto"></video>
               <canvas id="preview-canvas" hidden></canvas>
               <p id="preview-audio-label" class="preview-audio-label" hidden></p>
               <audio id="preview-audio"></audio>

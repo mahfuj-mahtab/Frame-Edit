@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Lightweight layered video editor",
   "main": "electron/main.js",
-  "author": "FrameEdit",
+  "author": "Mahfuj Mahtab Mohot <mohotmohot1@gmail.com>",
   "scripts": {
     "start": "electron --no-sandbox .",
     "dist": "electron-builder --linux AppImage"
@@ -29,7 +29,7 @@
       "**/node_modules/ffprobe-static/**"
     ],
     "linux": {
-      "target": ["AppImage"],
+      "target": ["deb"],
       "category": "Video"
     }
   }

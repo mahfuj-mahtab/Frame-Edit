@@ -1,10 +1,72 @@
 const { spawn } = require('child_process');
 
+const FRAME = 1 / 30;
+
 const PRESETS = {
   '1080p': { width: 1920, height: 1080, high: '8000k', medium: '5000k', low: '2500k' },
   '720p': { width: 1280, height: 720, high: '5000k', medium: '3000k', low: '1500k' },
   '480p': { width: 854, height: 480, high: '2500k', medium: '1500k', low: '800k' },
+  'shorts-1080': { width: 1080, height: 1920, high: '8000k', medium: '5000k', low: '2500k' },
+  'shorts-720': { width: 720, height: 1280, high: '5000k', medium: '3000k', low: '1500k' },
 };
+
+function evenSize(value, fallback) {
+  const number = Number(value);
+  const size = Number.isFinite(number) && number >= 2 ? Math.round(number) : fallback;
+  return size % 2 === 0 ? size : size - 1;
+}
+
+function clamp(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, number));
+}
+
+function clipEffects(clip) {
+  const effects = clip?.effects || {};
+  return {
+    brightness: clamp(effects.brightness, 0.2, 2, 1),
+    blur: clamp(effects.blur, 0, 40, 0),
+    zoom: clamp(effects.zoom, 0.5, 3, 1),
+  };
+}
+
+function trimWindow(clip, asset) {
+  let start = Number(clip.in);
+  let end = Number(clip.out);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  const mediaDuration = Number(asset?.duration);
+  if (asset && asset.type !== 'image' && Number.isFinite(mediaDuration) && mediaDuration > 0) {
+    start = Math.min(Math.max(0, start), mediaDuration);
+    end = Math.min(Math.max(0, end), mediaDuration);
+  } else {
+    start = Math.max(0, start);
+    end = Math.max(0, end);
+  }
+  if (end - start < FRAME) return null;
+  return { start, end };
+}
+
+function geometryFilters(width, height, zoom) {
+  const scaled = num(zoom);
+  return [
+    `scale=${width}:${height}:force_original_aspect_ratio=decrease`,
+    `scale='trunc(iw*${scaled}/2)*2':'trunc(ih*${scaled}/2)*2'`,
+    `crop=w='min(iw\\,${width})':h='min(ih\\,${height})':x='(iw-min(iw\\,${width}))/2':y='(ih-min(ih\\,${height}))/2'`,
+    `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black`,
+    'setsar=1',
+  ].join(',');
+}
+
+function coverFilters(width, height, blur, brightness) {
+  const parts = [
+    `scale=${width}:${height}:force_original_aspect_ratio=increase`,
+    `crop=${width}:${height}`,
+  ];
+  if (blur > 0) parts.push(`gblur=sigma=${num(blur)}`);
+  parts.push(`eq=brightness=${num(brightness)}`);
+  return parts.join(',');
+}
 
 function num(value) {
   const number = Number(value);
@@ -24,15 +86,15 @@ function sequenceDuration(project) {
 
 function buildExportArgs(project, options) {
   const preset = PRESETS[options.preset];
-  if (!preset) throw new Error('Choose 1080p, 720p, or 480p');
+  if (!preset) throw new Error('Choose a landscape or Shorts export size');
   const bitrate = preset[options.quality];
   if (!bitrate) throw new Error('Choose a high, medium, or low quality');
   if (!options.output) throw new Error('Choose where to save the video');
 
-  const width = Number(project.settings?.width) || 1920;
-  const height = Number(project.settings?.height) || 1080;
+  const width = evenSize(project.settings?.width, 1920);
+  const height = evenSize(project.settings?.height, 1080);
   const duration = sequenceDuration(project);
-  if (duration <= 0) throw new Error('Add a clip before exporting');
+  if (duration < FRAME) throw new Error('Clip is too short to export');
 
   const assets = new Map((project.assets || []).map((asset) => [asset.id, asset]));
   const track = (type) => project.tracks?.find((item) => item.type === type);
@@ -50,24 +112,34 @@ function buildExportArgs(project, options) {
     return asset;
   };
 
-  const videoInputs = sorted('video').map((clip) => {
+  const videoInputs = sorted('video').flatMap((clip) => {
     const asset = requireAsset(clip, 'video');
-    return { clip, asset, index: addInput(['-i', asset.path]) };
+    const range = trimWindow(clip, asset);
+    if (!range) return [];
+    return [{ clip, asset, range, index: addInput(['-i', asset.path]) }];
   });
-  const audioInputs = sorted('audio').map((clip) => {
+  const audioInputs = sorted('audio').flatMap((clip) => {
     const asset = requireAsset(clip, 'audio');
-    return { clip, asset, index: addInput(['-i', asset.path]) };
+    const range = trimWindow(clip, asset);
+    if (!range) return [];
+    return [{ clip, asset, range, index: addInput(['-i', asset.path]) }];
   });
-  const overlayInputs = sorted('overlay').map((clip) => {
+  const overlayInputs = sorted('overlay').flatMap((clip) => {
     const asset = requireAsset(clip, 'overlay');
+    if (clipLength(clip) < FRAME) return [];
     if (asset.type === 'image') {
-      return {
+      return [{
         clip,
         asset,
+        range: null,
         index: addInput(['-loop', '1', '-framerate', '30', '-t', String(num(duration)), '-i', asset.path]),
-      };
+      }];
     }
-    if (asset.type === 'video') return { clip, asset, index: addInput(['-i', asset.path]) };
+    if (asset.type === 'video') {
+      const range = trimWindow(clip, asset);
+      if (!range) return [];
+      return [{ clip, asset, range, index: addInput(['-i', asset.path]) }];
+    }
     throw new Error('The overlay track accepts images and video');
   });
 
@@ -86,12 +158,20 @@ function buildExportArgs(project, options) {
 
   videoInputs.forEach((item, index) => {
     const start = num(item.clip.start);
-    const end = num(start + clipLength(item.clip));
+    const end = num(start + (item.range.end - item.range.start));
     const label = `vc${index}`;
     const next = `vt${index}`;
-    filters.push(
-      `[${item.index}:v]trim=start=${num(item.clip.in)}:end=${num(item.clip.out)},setpts=PTS-STARTPTS,scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=30,setpts=PTS-STARTPTS+${start}/TB[${label}]`,
-    );
+    const effects = clipEffects(item.clip);
+    const brightness = clamp(effects.brightness - 1, -1, 1, 0);
+    const head = `trim=start=${num(item.range.start)}:end=${num(item.range.end)},setpts=PTS-STARTPTS,fps=30`;
+    if (effects.blur > 0) {
+      filters.push(`[${item.index}:v]${head},split[vbg${index}][vfg${index}]`);
+      filters.push(`[vbg${index}]${coverFilters(width, height, effects.blur, brightness)}[vbg${index}o]`);
+      filters.push(`[vfg${index}]${geometryFilters(width, height, effects.zoom)},eq=brightness=${num(brightness)}[vfg${index}o]`);
+      filters.push(`[vbg${index}o][vfg${index}o]overlay=(main_w-overlay_w)/2:(main_h-overlay_h)/2:format=auto,setpts=PTS-STARTPTS+${start}/TB[${label}]`);
+    } else {
+      filters.push(`[${item.index}:v]${head},${geometryFilters(width, height, effects.zoom)},eq=brightness=${num(brightness)},setpts=PTS-STARTPTS+${start}/TB[${label}]`);
+    }
     filters.push(
       `[${current}][${label}]overlay=0:0:enable='between(t,${start},${end})':eof_action=pass:format=auto[${next}]`,
     );
@@ -100,7 +180,7 @@ function buildExportArgs(project, options) {
       const audioLabel = `va${index}`;
       const delay = Math.max(0, Math.round(start * 1000));
       filters.push(
-        `[${item.index}:a]atrim=start=${num(item.clip.in)}:end=${num(item.clip.out)},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=${num(item.clip.volume ?? 1)},adelay=${delay}|${delay}[${audioLabel}]`,
+        `[${item.index}:a]atrim=start=${num(item.range.start)}:end=${num(item.range.end)},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=${num(item.clip.volume ?? 1)},adelay=${delay}|${delay}[${audioLabel}]`,
       );
       audioLabels.push(audioLabel);
     }
@@ -117,7 +197,7 @@ function buildExportArgs(project, options) {
     const label = `oc${index}`;
     const next = `ot${index}`;
     const trim = item.asset.type === 'video'
-      ? `trim=start=${num(item.clip.in)}:end=${num(item.clip.out)},setpts=PTS-STARTPTS,`
+      ? `trim=start=${num(item.range.start)}:end=${num(item.range.end)},setpts=PTS-STARTPTS,`
       : '';
     const shift = item.asset.type === 'video' ? `,setpts=PTS-STARTPTS+${start}/TB` : '';
     filters.push(
@@ -131,13 +211,13 @@ function buildExportArgs(project, options) {
       const audioLabel = `oa${index}`;
       const delay = Math.max(0, Math.round(start * 1000));
       filters.push(
-        `[${item.index}:a]atrim=start=${num(item.clip.in)}:end=${num(item.clip.out)},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=${num(item.clip.volume ?? 1)},adelay=${delay}|${delay}[${audioLabel}]`,
+        `[${item.index}:a]atrim=start=${num(item.range.start)}:end=${num(item.range.end)},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=${num(item.clip.volume ?? 1)},adelay=${delay}|${delay}[${audioLabel}]`,
       );
       audioLabels.push(audioLabel);
     }
   });
 
-  filters.push(`[${current}]scale=${preset.width}:${preset.height}:flags=lanczos,format=yuv420p[vout]`);
+  filters.push(`[${current}]scale=${preset.width}:${preset.height}:force_original_aspect_ratio=decrease:flags=lanczos,pad=${preset.width}:${preset.height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,format=yuv420p[vout]`);
 
   audioInputs.forEach((item, index) => {
     if (item.clip.muted) return;
@@ -145,7 +225,7 @@ function buildExportArgs(project, options) {
     const delay = Math.max(0, Math.round(start * 1000));
     const label = `aa${index}`;
     filters.push(
-      `[${item.index}:a]atrim=start=${num(item.clip.in)}:end=${num(item.clip.out)},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=${num(item.clip.volume ?? 1)},adelay=${delay}|${delay}[${label}]`,
+      `[${item.index}:a]atrim=start=${num(item.range.start)}:end=${num(item.range.end)},asetpts=PTS-STARTPTS,aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,volume=${num(item.clip.volume ?? 1)},adelay=${delay}|${delay}[${label}]`,
     );
     audioLabels.push(label);
   });

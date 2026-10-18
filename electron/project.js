@@ -11,6 +11,26 @@ function mediaUrl(filePath) {
   return url.href;
 }
 
+function clamp(value, min, max, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, number));
+}
+
+function normalizeClip(clip) {
+  const effects = clip?.effects || {};
+  return {
+    ...clip,
+    volume: clamp(clip?.volume, 0, 1, 1),
+    muted: Boolean(clip?.muted),
+    effects: {
+      brightness: clamp(effects.brightness, 0.2, 2, 1),
+      blur: clamp(effects.blur, 0, 40, 0),
+      zoom: clamp(effects.zoom, 0.5, 3, 1),
+    },
+  };
+}
+
 function normalizeProject(project) {
   if (!project || project.version !== 1) throw new Error('This project file is not supported');
   const tracks = ['overlay', 'video', 'audio'].map((type) => {
@@ -18,7 +38,7 @@ function normalizeProject(project) {
     return {
       id: type,
       type,
-      clips: Array.isArray(track?.clips) ? track.clips : [],
+      clips: Array.isArray(track?.clips) ? track.clips.map((clip) => normalizeClip(clip)) : [],
     };
   });
   const assets = (project.assets || []).map((asset) => ({

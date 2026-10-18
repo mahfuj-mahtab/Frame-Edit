@@ -2,6 +2,10 @@ const MIN_PX = 16;
 const MAX_PX = 320;
 const IMAGE_DURATION = 5;
 const MIN_CLIP = 0.1;
+const FRAMES = {
+  landscape: { width: 1920, height: 1080, exportPreset: '1080p' },
+  shorts: { width: 1080, height: 1920, exportPreset: 'shorts-1080' },
+};
 const SNAP_PX = 10;
 
 const runtime = document.getElementById('runtime');
@@ -12,6 +16,7 @@ const importButton = document.getElementById('import-media');
 const openButton = document.getElementById('open-project');
 const saveButton = document.getElementById('save-project');
 const exportButton = document.getElementById('export-button');
+const frameSize = document.getElementById('frame-size');
 const exportSize = document.getElementById('export-size');
 const exportQuality = document.getElementById('export-quality');
 const exportPanel = document.getElementById('export-panel');
@@ -24,6 +29,7 @@ const mediaError = document.getElementById('media-error');
 const previewEmpty = document.getElementById('preview-empty');
 const previewCanvas = document.getElementById('preview-canvas');
 const previewVideo = document.getElementById('preview-video');
+const previewVideoB = document.getElementById('preview-video-b');
 const overlayVideo = document.getElementById('overlay-video');
 const previewAudio = document.getElementById('preview-audio');
 const previewAudioLabel = document.getElementById('preview-audio-label');
@@ -70,6 +76,9 @@ let playing = false;
 let lastTick = 0;
 let playbackFrame = 0;
 let videoClipId = null;
+let baseMedia = previewVideo;
+let incomingWait = 0;
+const standbyClip = new WeakMap();
 let overlayClipId = null;
 let audioClipId = null;
 let projectPath = null;
@@ -80,6 +89,12 @@ let pixelsPerSecond = 80;
 let clipboard = null;
 let clipDragging = false;
 let overlayDrag = null;
+let videoSettling = false;
+let paintedVideo = false;
+const pendingSeeks = new Set();
+const seekTokens = new WeakMap();
+const seekTargets = new WeakMap();
+const PLAY_DRIFT = 0.25;
 const thumbCache = new Map();
 const thumbQueue = [];
 let thumbRunning = false;
@@ -99,6 +114,18 @@ redoButton.addEventListener('click', redo);
 zoomOutButton.addEventListener('click', () => setZoom(pixelsPerSecond / 1.25));
 zoomInButton.addEventListener('click', () => setZoom(pixelsPerSecond * 1.25));
 zoomRange.addEventListener('input', () => setZoom(Number(zoomRange.value)));
+frameSize.addEventListener('change', () => {
+  const frame = FRAMES[frameSize.value];
+  if (!frame) return;
+  sequence.settings.width = frame.width;
+  sequence.settings.height = frame.height;
+  const landscapePreset = !exportSize.value.startsWith('shorts');
+  if (frameSize.value === 'shorts' && landscapePreset) exportSize.value = frame.exportPreset;
+  if (frameSize.value === 'landscape' && !landscapePreset) exportSize.value = frame.exportPreset;
+  dirty = true;
+  updateTitle();
+  if (usingTimeline()) setTimelineTime(timelineTime, true);
+});
 playToggle.addEventListener('click', () => {
   if (usingTimeline()) toggleTimeline();
   else toggleSource();
@@ -138,6 +165,23 @@ for (const media of [previewVideo, previewAudio]) {
   media.addEventListener('error', (event) => {
     if (!event.target.getAttribute('src') || usingTimeline() || event.target !== activeSource()) return;
     showPreviewMessage('Could not play this file');
+  });
+}
+
+for (const media of [previewVideo, previewVideoB, overlayVideo, previewAudio]) {
+  media.addEventListener('seeked', () => {
+    if (isStandby(media)) {
+      acceptStandbySeek(media);
+      return;
+    }
+    finishSeek(media, seekTokens.get(media));
+  });
+}
+
+for (const media of [previewVideo, previewVideoB]) {
+  media.addEventListener('timeupdate', () => {
+    if (!usingTimeline() || media !== baseMedia || media.seeking || videoSettling) return;
+    drawFrame();
   });
 }
 
@@ -353,6 +397,7 @@ function applyProject(filePath, project) {
   assets.splice(0, assets.length, ...project.assets);
   sequence.settings = project.settings;
   sequence.tracks = project.tracks;
+  frameSize.value = sequence.settings.height > sequence.settings.width ? 'shorts' : 'landscape';
   projectPath = filePath;
   dirty = false;
   selectedId = null;
@@ -481,11 +526,97 @@ function toggleTimeline() {
 
 function pauseTimeline() {
   playing = false;
+  pendingSeeks.clear();
+  videoSettling = false;
+  incomingWait = 0;
+  for (const media of [previewVideo, previewVideoB, overlayVideo, previewAudio]) {
+    seekTokens.set(media, (seekTokens.get(media) || 0) + 1);
+  }
   cancelAnimationFrame(playbackFrame);
   playToggle.textContent = 'Play';
   if (!previewVideo.paused) previewVideo.pause();
+  if (!previewVideoB.paused) previewVideoB.pause();
   if (!overlayVideo.paused) overlayVideo.pause();
   if (!previewAudio.paused) previewAudio.pause();
+}
+
+function beginSeek(media, target) {
+  const token = (seekTokens.get(media) || 0) + 1;
+  seekTokens.set(media, token);
+  seekTargets.set(media, target);
+  pendingSeeks.add(media);
+  if (media === baseMedia) videoSettling = true;
+  setTimeout(() => {
+    if (seekTokens.get(media) !== token || !pendingSeeks.has(media)) return;
+    const clip = clipForMedia(media);
+    const current = media.currentTime;
+    if (clip && !sourceInRange(clip, current)) {
+      pendingSeeks.delete(media);
+      if (media === baseMedia) videoSettling = false;
+      if (playing) syncPreview(false);
+      return;
+    }
+    finishSeek(media, token, true);
+  }, 1200);
+  return token;
+}
+
+function paintPreview() {
+  if (!usingTimeline()) return;
+  if (typeof baseMedia.requestVideoFrameCallback === 'function' && baseMedia.readyState >= 2) {
+    baseMedia.requestVideoFrameCallback(() => {
+      if (usingTimeline()) drawFrame();
+    });
+    return;
+  }
+  drawFrame();
+}
+
+function clipForMedia(media) {
+  if (media === previewVideo || media === previewVideoB) return clipAt(trackByType('video'), timelineTime);
+  if (media === overlayVideo) return clipAt(trackByType('overlay'), timelineTime);
+  if (media === previewAudio) return clipAt(trackByType('audio'), timelineTime);
+  return null;
+}
+
+function finishSeek(media, token, force) {
+  if (seekTokens.get(media) !== token || !pendingSeeks.has(media)) return;
+  const target = seekTargets.get(media);
+  const current = Number.isFinite(media.currentTime) ? media.currentTime : null;
+  const clip = clipForMedia(media);
+  const inside = !clip || sourceInRange(clip, current);
+  const nearTarget = target == null || current == null || Math.abs(current - target) <= 0.5;
+  if (!force && (!inside || !nearTarget)) return;
+  resumeAfterSeek(media, token);
+}
+
+function resumeAfterSeek(media, token) {
+  if (seekTokens.get(media) !== token || !pendingSeeks.has(media)) return;
+  pendingSeeks.delete(media);
+  if (media === baseMedia) videoSettling = false;
+  if (usingTimeline()) drawFrame();
+  if (!playing) return;
+  const clip = clipForMedia(media);
+  if (clip && !sourceInRange(clip, media.currentTime)) return;
+  lastTick = performance.now();
+  if (media.paused && !media.seeking) media.play().catch(() => {});
+}
+
+function videoCanDrive(clip) {
+  const asset = clip ? assetById(clip.assetId) : null;
+  return Boolean(clip && asset && !asset.missing && asset.type === 'video');
+}
+
+function videoClockReady(clip, media, activeId) {
+  if (!clip || activeId !== clip.id) return false;
+  if (pendingSeeks.has(media) || media.seeking || media.readyState < 2 || media.paused) return false;
+  return sourceInRange(clip, media.currentTime);
+}
+
+function holdForMedia(now, media) {
+  lastTick = now;
+  if (!pendingSeeks.has(media) && !media.seeking) syncPreview(false);
+  playbackFrame = requestAnimationFrame(tick);
 }
 
 function tick(now) {
@@ -493,10 +624,25 @@ function tick(now) {
   const videoClip = clipAt(trackByType('video'), timelineTime);
   const overlayClip = clipAt(trackByType('overlay'), timelineTime);
   const audioClip = clipAt(trackByType('audio'), timelineTime);
-  const overlayAsset = overlayClip ? assetById(overlayClip.assetId) : null;
-  const clock = mediaClock(videoClip, previewVideo, videoClipId)
-    || (overlayAsset?.type === 'video' ? mediaClock(overlayClip, overlayVideo, overlayClipId) : null)
-    || mediaClock(audioClip, previewAudio, audioClipId);
+  const driveVideo = videoCanDrive(videoClip);
+  const driveOverlay = !driveVideo && videoCanDrive(overlayClip);
+  if (driveVideo && !videoClockReady(videoClip, baseMedia, videoClipId)) {
+    holdForMedia(now, baseMedia);
+    return;
+  }
+  if (driveOverlay && !videoClockReady(overlayClip, overlayVideo, overlayClipId)) {
+    holdForMedia(now, overlayVideo);
+    return;
+  }
+  const clock = driveVideo
+    ? mediaClock(videoClip, baseMedia, videoClipId)
+    : driveOverlay
+      ? mediaClock(overlayClip, overlayVideo, overlayClipId)
+      : mediaClock(audioClip, previewAudio, audioClipId);
+  if ((driveVideo || driveOverlay) && clock == null) {
+    holdForMedia(now, driveVideo ? baseMedia : overlayVideo);
+    return;
+  }
   const next = clock == null ? timelineTime + (now - lastTick) / 1000 : clock;
   lastTick = now;
   if (next >= sequenceDuration()) {
@@ -546,29 +692,159 @@ function syncPreview(scrub) {
   drawFrame();
 }
 
+function isStandby(media) {
+  return (media === previewVideo || media === previewVideoB) && media !== baseMedia;
+}
+
+function standbyMedia() {
+  return baseMedia === previewVideo ? previewVideoB : previewVideo;
+}
+
+function neighborClip(clip, direction) {
+  const clips = [...trackByType('video').clips].sort((a, b) => a.start - b.start);
+  const index = clips.findIndex((item) => item.id === clip.id);
+  if (index < 0) return null;
+  return clips[index + direction] || null;
+}
+
+function discontinuousJoin(before, after) {
+  if (!before || !after) return false;
+  const timelineGap = after.start - (before.start + clipLength(before));
+  if (timelineGap > 0.2) return false;
+  if (before.assetId !== after.assetId) return true;
+  return Math.abs(before.out - after.in) > 0.15;
+}
+
+function acceptStandbySeek(media) {
+  const clip = standbyClip.get(media);
+  const target = seekTargets.get(media);
+  const current = Number.isFinite(media.currentTime) ? media.currentTime : null;
+  if (!clip || !pendingSeeks.has(media)) return;
+  const nearTarget = target == null || current == null || Math.abs(current - target) <= 0.35;
+  if (!nearTarget || !sourceInRange(clip, current)) return;
+  pendingSeeks.delete(media);
+  if (playing && videoClipId === clip.id && clipAt(trackByType('video'), timelineTime)?.id === clip.id) {
+    if (takeStandby(clip)) {
+      incomingWait = 0;
+      videoSettling = false;
+      primeUpcoming(clip);
+      drawFrame();
+    }
+  }
+}
+
+function prepareStandby(clip) {
+  const asset = assetById(clip.assetId);
+  if (!asset || asset.missing || asset.type !== 'video') return;
+  const media = standbyMedia();
+  const target = Math.min(Math.max(clip.in, 0), Math.max(clip.in, clip.out - 0.001));
+  if (media.getAttribute('src') === asset.url && !pendingSeeks.has(media) && !media.seeking && media.readyState >= 2 && sourceInRange(clip, media.currentTime)) {
+    return;
+  }
+  const pendingTarget = seekTargets.get(media);
+  if (pendingSeeks.has(media) && standbyClip.get(media)?.id === clip.id && pendingTarget != null && Math.abs(pendingTarget - target) <= 0.05) {
+    return;
+  }
+  const token = (seekTokens.get(media) || 0) + 1;
+  seekTokens.set(media, token);
+  seekTargets.set(media, target);
+  standbyClip.set(media, clip);
+  pendingSeeks.add(media);
+  media.muted = true;
+  const seekToTarget = () => {
+    if (seekTokens.get(media) !== token || !isStandby(media)) return;
+    if (!media.paused) media.pause();
+    if (media.readyState >= 2 && Math.abs(media.currentTime - target) <= 0.03) {
+      pendingSeeks.delete(media);
+      return;
+    }
+    media.currentTime = target;
+  };
+  if (media.getAttribute('src') !== asset.url) {
+    media.src = asset.url;
+    media.addEventListener('loadeddata', () => {
+      if (seekTokens.get(media) !== token) return;
+      seekToTarget();
+    }, { once: true });
+    return;
+  }
+  if (!media.paused) media.pause();
+  seekToTarget();
+}
+
+function takeStandby(clip) {
+  const media = standbyMedia();
+  const asset = assetById(clip.assetId);
+  if (!asset || media.getAttribute('src') !== asset.url) return false;
+  if (media.seeking || pendingSeeks.has(media) || media.readyState < 2) return false;
+  if (!sourceInRange(clip, media.currentTime)) return false;
+  const previous = baseMedia;
+  pendingSeeks.delete(previous);
+  seekTokens.set(previous, (seekTokens.get(previous) || 0) + 1);
+  if (!previous.paused) previous.pause();
+  pendingSeeks.delete(media);
+  baseMedia = media;
+  videoClipId = clip.id;
+  videoSettling = false;
+  applyGain(media, clip);
+  if (playing && media.paused && !media.seeking) media.play().catch(() => {});
+  return true;
+}
+
+function primeUpcoming(clip) {
+  if (!playing || !clip) return;
+  const next = neighborClip(clip, 1);
+  if (!discontinuousJoin(clip, next)) return;
+  const remaining = (clip.start + clipLength(clip)) - timelineTime;
+  if (remaining > 2.5) return;
+  prepareStandby(next);
+}
+
 function syncVideo(clip, scrub) {
   const asset = clip ? assetById(clip.assetId) : null;
   if (!clip || !asset || asset.missing) {
-    if (!previewVideo.paused) previewVideo.pause();
+    if (!baseMedia.paused) baseMedia.pause();
+    if (!standbyMedia().paused) standbyMedia().pause();
     videoClipId = null;
+    videoSettling = false;
+    paintedVideo = false;
+    pendingSeeks.delete(baseMedia);
     return;
   }
-  applyGain(previewVideo, clip);
+  const previous = neighborClip(clip, -1);
   const sourceTime = clip.in + (timelineTime - clip.start);
+  if (playing && !scrub && discontinuousJoin(previous, clip) && !sourceInRange(clip, baseMedia.currentTime)) {
+    videoClipId = clip.id;
+    if (takeStandby(clip)) {
+      incomingWait = 0;
+      primeUpcoming(clip);
+      return;
+    }
+    prepareStandby(clip);
+    if (!pendingSeeks.has(baseMedia) && !baseMedia.seeking) {
+      followSourceTime(baseMedia, sourceTime, false, clip, true);
+    }
+    return;
+  }
+  applyGain(baseMedia, clip);
+  const clipChanged = videoClipId !== clip.id;
   videoClipId = clip.id;
-  if (previewVideo.getAttribute('src') !== asset.url) {
+  if (baseMedia.getAttribute('src') !== asset.url) {
     const clipId = clip.id;
-    previewVideo.src = asset.url;
-    previewVideo.addEventListener('loadeddata', () => {
-      if (videoClipId !== clipId) return;
+    const media = baseMedia;
+    media.src = asset.url;
+    media.addEventListener('loadeddata', () => {
+      if (videoClipId !== clipId || baseMedia !== media) return;
       const current = clipAt(trackByType('video'), timelineTime);
       if (!current || current.id !== clipId) return;
-      followSourceTime(previewVideo, current.in + (timelineTime - current.start), true);
+      rememberDuration(asset, media.duration);
+      followSourceTime(media, current.in + (timelineTime - current.start), true, current);
       drawFrame();
     }, { once: true });
     return;
   }
-  followSourceTime(previewVideo, sourceTime, scrub);
+  followSourceTime(baseMedia, sourceTime, scrub, clip, clipChanged);
+  if (sourceInRange(clip, baseMedia.currentTime)) primeUpcoming(clip);
 }
 
 function syncOverlay(clip, scrub) {
@@ -576,10 +852,12 @@ function syncOverlay(clip, scrub) {
   if (!clip || !asset || asset.type !== 'video' || asset.missing) {
     if (!overlayVideo.paused) overlayVideo.pause();
     overlayClipId = null;
+    pendingSeeks.delete(overlayVideo);
     return;
   }
   applyGain(overlayVideo, clip);
   const sourceTime = clip.in + (timelineTime - clip.start);
+  const clipChanged = overlayClipId !== clip.id;
   overlayClipId = clip.id;
   if (overlayVideo.getAttribute('src') !== asset.url) {
     const clipId = clip.id;
@@ -588,12 +866,12 @@ function syncOverlay(clip, scrub) {
       if (overlayClipId !== clipId) return;
       const current = clipAt(trackByType('overlay'), timelineTime);
       if (!current || current.id !== clipId) return;
-      followSourceTime(overlayVideo, current.in + (timelineTime - current.start), true);
+      followSourceTime(overlayVideo, current.in + (timelineTime - current.start), true, current);
       drawFrame();
     }, { once: true });
     return;
   }
-  followSourceTime(overlayVideo, sourceTime, scrub);
+  followSourceTime(overlayVideo, sourceTime, scrub, clip, clipChanged);
 }
 
 function syncAudio(clip, scrub) {
@@ -601,10 +879,12 @@ function syncAudio(clip, scrub) {
   if (!clip || !asset || asset.missing) {
     if (!previewAudio.paused) previewAudio.pause();
     audioClipId = null;
+    pendingSeeks.delete(previewAudio);
     return;
   }
   applyGain(previewAudio, clip);
   const sourceTime = clip.in + (timelineTime - clip.start);
+  const clipChanged = audioClipId !== clip.id;
   audioClipId = clip.id;
   if (previewAudio.getAttribute('src') !== asset.url) {
     const clipId = clip.id;
@@ -613,31 +893,53 @@ function syncAudio(clip, scrub) {
       if (audioClipId !== clipId) return;
       const current = clipAt(trackByType('audio'), timelineTime);
       if (!current || current.id !== clipId) return;
-      followSourceTime(previewAudio, current.in + (timelineTime - current.start), true);
+      followSourceTime(previewAudio, current.in + (timelineTime - current.start), true, current, true);
     }, { once: true });
     return;
   }
-  const drift = Math.abs((previewAudio.currentTime || 0) - sourceTime);
-  const videoIsMaster = Boolean(clipAt(trackByType('video'), timelineTime));
-  if (!previewAudio.seeking && (scrub || drift > (videoIsMaster ? 0.2 : 0.35))) {
-    previewAudio.currentTime = sourceTime;
-  }
-  if (playing && previewAudio.paused && !previewAudio.seeking) previewAudio.play().catch(() => {});
-  if (!playing && !previewAudio.paused) previewAudio.pause();
+  followSourceTime(previewAudio, sourceTime, scrub, clip, clipChanged);
 }
 
-function followSourceTime(media, sourceTime, scrub) {
-  const drift = Math.abs((media.currentTime || 0) - sourceTime);
-  if (!media.seeking && (scrub || drift > 0.35)) media.currentTime = Math.max(0, sourceTime);
-  if (playing && media.paused && !media.seeking) media.play().catch(() => {});
+function followSourceTime(media, sourceTime, scrub, clip, clipChanged) {
+  let target = Math.max(0, sourceTime);
+  if (clip) target = Math.min(Math.max(target, clip.in), Math.max(clip.in, clip.out - 0.001));
+  const current = Number.isFinite(media.currentTime) ? media.currentTime : 0;
+  const drift = Math.abs(current - target);
+  const outside = Boolean(clip) && !sourceInRange(clip, current);
+  const needsSeek = (Boolean(clipChanged) && drift > 0.15)
+    || (outside && drift > 0.001)
+    || (scrub && drift > 0.03)
+    || drift > PLAY_DRIFT;
+  if (pendingSeeks.has(media) && !scrub && !clipChanged) {
+    const pendingTarget = seekTargets.get(media);
+    if (pendingTarget != null && Math.abs(pendingTarget - target) <= 0.15) return;
+  }
+  if (needsSeek) {
+    beginSeek(media, target);
+    if (!media.paused) media.pause();
+    media.currentTime = target;
+    return;
+  }
+  if (playing && media.paused && !media.seeking && !pendingSeeks.has(media) && (!clip || sourceInRange(clip, current))) {
+    media.play().catch(() => {});
+  }
   if (!playing && !media.paused) media.pause();
+}
+
+function sourceInRange(clip, current) {
+  return Boolean(clip) && Number.isFinite(current) && current >= clip.in - 0.15 && current <= clip.out + 0.05;
 }
 
 function mediaClock(clip, media, activeId) {
   if (!clip || activeId !== clip.id || media.readyState < 2 || media.paused || media.seeking) return null;
-  const mapped = clip.start + (media.currentTime - clip.in);
+  const current = media.currentTime;
+  if (!sourceInRange(clip, current)) return null;
+  const mapped = clip.start + (current - clip.in);
+  const clipEnd = clip.start + clipLength(clip);
   if (!Number.isFinite(mapped)) return null;
-  return Math.min(mapped, clip.start + clipLength(clip));
+  if (mapped >= clipEnd - 0.0001) return clipEnd;
+  if (mapped < clip.start) return clip.start;
+  return mapped;
 }
 
 function applyGain(media, clip) {
@@ -645,26 +947,67 @@ function applyGain(media, clip) {
   media.volume = Math.min(1, Math.max(0, Number(clip.volume ?? 1)));
 }
 
+function frameUsable(clip, media) {
+  if (!clip || media.readyState < 2 || media.seeking || media.videoWidth < 1) return false;
+  return sourceInRange(clip, media.currentTime) || !paintedVideo;
+}
+
 function drawFrame() {
   if (!usingTimeline()) return;
   const width = sequence.settings.width;
   const height = sequence.settings.height;
-  if (previewCanvas.width !== width || previewCanvas.height !== height) {
+  const videoClip = clipAt(trackByType('video'), timelineTime);
+  const sizeMatches = previewCanvas.width === width && previewCanvas.height === height;
+  const frameReady = !videoSettling || (baseMedia.readyState >= 2 && !baseMedia.seeking && sourceInRange(videoClip, baseMedia.currentTime));
+  const videoReady = videoClip && frameUsable(videoClip, baseMedia) && frameReady;
+  if (videoClip && !videoReady && sizeMatches && paintedVideo) return;
+  if (!sizeMatches) {
     previewCanvas.width = width;
     previewCanvas.height = height;
+    paintedVideo = false;
   }
   const ctx = previewCanvas.getContext('2d');
+  ctx.save();
+  ctx.filter = 'none';
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, width, height);
-  const videoClip = clipAt(trackByType('video'), timelineTime);
-  if (videoClip && previewVideo.readyState >= 2) {
-    const rect = containRect(previewVideo.videoWidth, previewVideo.videoHeight, width, height);
-    if (rect.w > 0 && rect.h > 0) ctx.drawImage(previewVideo, rect.x, rect.y, rect.w, rect.h);
+  ctx.restore();
+  if (videoReady) {
+    drawAdjustedVideo(ctx, baseMedia, videoClip, width, height);
+    paintedVideo = true;
+  } else if (!videoClip) {
+    paintedVideo = false;
   }
   const overlayClip = clipAt(trackByType('overlay'), timelineTime);
   const overlayAsset = overlayClip ? assetById(overlayClip.assetId) : null;
   if (overlayClip && overlayAsset) drawOverlayClip(ctx, overlayClip, overlayAsset);
   previewCanvas.hidden = false;
+}
+
+function drawAdjustedVideo(ctx, video, clip, width, height) {
+  const effects = clipEffects(clip);
+  const sourceWidth = video.videoWidth;
+  const sourceHeight = video.videoHeight;
+  if (!sourceWidth || !sourceHeight) return;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, width, height);
+  ctx.clip();
+  if (effects.blur > 0) {
+    ctx.save();
+    ctx.filter = `brightness(${effects.brightness}) blur(${effects.blur}px)`;
+    const cover = coverRect(sourceWidth, sourceHeight, width, height);
+    if (cover.w > 0 && cover.h > 0) ctx.drawImage(video, cover.x, cover.y, cover.w, cover.h);
+    ctx.restore();
+  }
+  ctx.filter = `brightness(${effects.brightness})`;
+  const fit = containRect(sourceWidth, sourceHeight, width, height);
+  const drawW = fit.w * effects.zoom;
+  const drawH = fit.h * effects.zoom;
+  const drawX = fit.x + (fit.w - drawW) / 2;
+  const drawY = fit.y + (fit.h - drawH) / 2;
+  if (drawW > 0 && drawH > 0) ctx.drawImage(video, drawX, drawY, drawW, drawH);
+  ctx.restore();
 }
 
 function drawOverlayClip(ctx, clip, asset) {
@@ -742,6 +1085,7 @@ function placeClip(track, asset, start) {
     out: duration,
     volume: 1,
     muted: false,
+    effects: defaultEffects(),
     transform: track.type === 'overlay' ? defaultTransform(asset) : null,
   });
   if (asset.type === 'image') ensureImage(asset);
@@ -869,6 +1213,7 @@ function splitAtPlayhead() {
     out: clip.out,
     volume: clip.volume,
     muted: clip.muted,
+    effects: { ...clipEffects(clip) },
     transform: clip.transform ? { ...clip.transform } : null,
   });
   clip.out = splitPoint;
@@ -938,6 +1283,19 @@ function renderInspector() {
     card.append(missing);
   }
 
+  if (found.track.type === 'video' && asset && !asset.missing) {
+    const effects = ensureEffects(clip);
+    addRange(card, 'Brightness', effects.brightness, 0.2, 2, 0.05, (value) => {
+      effects.brightness = value;
+    }, (value) => `Brightness · ${Math.round(value * 100)}%`);
+    addRange(card, 'Background blur', effects.blur, 0, 40, 1, (value) => {
+      effects.blur = value;
+    }, (value) => `Background blur · ${Math.round(value)} px`);
+    addRange(card, 'Zoom', effects.zoom, 0.5, 3, 0.05, (value) => {
+      effects.zoom = value;
+    }, (value) => `Zoom · ${Math.round(value * 100)}%`);
+  }
+
   if (found.track.type === 'overlay' && asset) {
     const transform = clip.transform || defaultTransform(asset);
     clip.transform = transform;
@@ -948,7 +1306,7 @@ function renderInspector() {
   }
 
   if (asset && (asset.type === 'video' || found.track.type === 'audio')) {
-    addRange(card, found.track.type === 'video' ? 'Video audio' : 'Volume', clip.volume ?? 1, 0, 1, 0.05, (value) => {
+    addRange(card, found.track.type === 'video' ? 'Original audio' : 'Volume', clip.volume ?? 1, 0, 1, 0.05, (value) => {
       clip.volume = value;
       setTimelineTime(timelineTime, true);
     });
@@ -962,8 +1320,14 @@ function renderInspector() {
       commitEdit();
       setTimelineTime(timelineTime, true);
     });
-    mute.append(box, document.createTextNode('Mute'));
+    mute.append(box, document.createTextNode(found.track.type === 'video' ? 'Mute original audio' : 'Mute'));
     card.append(mute);
+    if (found.track.type === 'video') {
+      const note = document.createElement('p');
+      note.className = 'inspector-meta';
+      note.textContent = 'Muted video stays silent in preview and export. Drop music or a voiceover on the Audio track to replace it.';
+      card.append(note);
+    }
   }
 
   inspector.append(card);
@@ -988,20 +1352,24 @@ function addNumber(parent, label, value, min, max, step, apply) {
   parent.append(wrap);
 }
 
-function addRange(parent, label, value, min, max, step, apply) {
+function addRange(parent, label, value, min, max, step, apply, format) {
   const wrap = document.createElement('label');
   wrap.className = 'control';
   const caption = document.createElement('span');
-  caption.textContent = `${label} · ${Math.round(Number(value) * 100)}%`;
   const input = document.createElement('input');
+  const renderCaption = () => {
+    const current = Number(input.value);
+    caption.textContent = format ? format(current) : `${label} · ${Math.round(current * 100)}%`;
+  };
   input.type = 'range';
   input.min = String(min);
   input.max = String(max);
   input.step = String(step);
   input.value = String(value);
+  renderCaption();
   input.addEventListener('input', () => {
     apply(Number(input.value));
-    caption.textContent = `${label} · ${Math.round(Number(input.value) * 100)}%`;
+    renderCaption();
     drawFrame();
   });
   input.addEventListener('change', () => commitEdit());
@@ -1102,12 +1470,19 @@ function showPreviewMessage(message) {
 }
 
 function showEmptyPreview() {
+  baseMedia = previewVideo;
+  incomingWait = 0;
   previewVideo.pause();
+  previewVideoB.pause();
   overlayVideo.pause();
   previewAudio.pause();
   previewVideo.classList.remove('is-underlay');
+  previewVideo.dataset.primed = '';
   previewVideo.removeAttribute('src');
   previewVideo.load();
+  previewVideoB.dataset.primed = '';
+  previewVideoB.removeAttribute('src');
+  previewVideoB.load();
   overlayVideo.removeAttribute('src');
   overlayVideo.load();
   previewAudio.removeAttribute('src');
@@ -1130,12 +1505,19 @@ function showEmptyPreview() {
 }
 
 function stopSource() {
+  baseMedia = previewVideo;
+  incomingWait = 0;
   previewVideo.pause();
+  previewVideoB.pause();
   overlayVideo.pause();
   previewAudio.pause();
   previewVideo.classList.remove('is-underlay');
+  previewVideo.dataset.primed = '';
   previewVideo.removeAttribute('src');
   previewVideo.load();
+  previewVideoB.dataset.primed = '';
+  previewVideoB.removeAttribute('src');
+  previewVideoB.load();
   overlayVideo.removeAttribute('src');
   overlayVideo.load();
   previewAudio.removeAttribute('src');
@@ -1159,6 +1541,35 @@ function keepPlayheadVisible() {
   else if (x > timelineScroll.scrollLeft + timelineScroll.clientWidth - margin) {
     timelineScroll.scrollLeft = x - timelineScroll.clientWidth + margin;
   }
+}
+
+function coverRect(sourceWidth, sourceHeight, width, height) {
+  if (!sourceWidth || !sourceHeight) return { x: 0, y: 0, w: 0, h: 0 };
+  const scale = Math.max(width / sourceWidth, height / sourceHeight);
+  const w = sourceWidth * scale;
+  const h = sourceHeight * scale;
+  return { x: (width - w) / 2, y: (height - h) / 2, w, h };
+}
+
+function defaultEffects() {
+  return { brightness: 1, blur: 0, zoom: 1 };
+}
+
+function clipEffects(clip) {
+  const effects = clip?.effects || {};
+  const brightness = Number(effects.brightness);
+  const blur = Number(effects.blur);
+  const zoom = Number(effects.zoom);
+  return {
+    brightness: Number.isFinite(brightness) ? Math.min(2, Math.max(0.2, brightness)) : 1,
+    blur: Number.isFinite(blur) ? Math.min(40, Math.max(0, blur)) : 0,
+    zoom: Number.isFinite(zoom) ? Math.min(3, Math.max(0.5, zoom)) : 1,
+  };
+}
+
+function ensureEffects(clip) {
+  clip.effects = clipEffects(clip);
+  return clip.effects;
 }
 
 function containRect(sourceWidth, sourceHeight, width, height) {
@@ -1209,8 +1620,33 @@ function findClip(id) {
 }
 
 function clipDuration(asset) {
-  if (asset.type === 'image' || !Number.isFinite(asset.duration) || asset.duration <= 0) return IMAGE_DURATION;
-  return asset.duration;
+  if (asset.type === 'image') return IMAGE_DURATION;
+  if (Number.isFinite(asset.duration) && asset.duration > 0) return asset.duration;
+  return 1 / 30;
+}
+
+function rememberDuration(asset, duration) {
+  if (!asset || asset.type === 'image' || !Number.isFinite(duration) || duration <= 0) return;
+  const known = Number(asset.duration);
+  if (Number.isFinite(known) && known > 0 && known <= duration + 0.05) return;
+  asset.duration = duration;
+  let changed = false;
+  for (const track of sequence.tracks) {
+    for (const clip of track.clips) {
+      if (clip.assetId !== asset.id || !(clip.out > duration)) continue;
+      const length = Math.max(1 / 30, duration - clip.in);
+      clip.out = clip.in + length;
+      if (clip.out > duration) {
+        clip.in = Math.max(0, duration - 1 / 30);
+        clip.out = duration;
+      }
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  renderTimeline();
+  renderInspector();
+  commitEdit();
 }
 
 function clipLength(clip) {

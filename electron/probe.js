@@ -60,6 +60,29 @@ function pictureStream(streams) {
   );
 }
 
+function parseRate(rate) {
+  if (!rate || rate === '0/0') return 0;
+  const [numerator, denominator] = String(rate).split('/').map(Number);
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) return 0;
+  return numerator / denominator;
+}
+
+function streamLength(stream) {
+  const duration = Number(stream?.duration);
+  if (Number.isFinite(duration) && duration > 0) return duration;
+  const frames = Number(stream?.nb_frames);
+  const rate = parseRate(stream?.avg_frame_rate) || parseRate(stream?.r_frame_rate);
+  if (Number.isFinite(frames) && frames > 0 && rate > 0) return frames / rate;
+  return null;
+}
+
+function mediaDuration(probed, type, picture, audio) {
+  if (type === 'image') return null;
+  const formatDuration = Number(probed.format?.duration);
+  if (Number.isFinite(formatDuration) && formatDuration > 0) return formatDuration;
+  return streamLength(type === 'audio' ? audio : picture);
+}
+
 async function describeMedia(filePath) {
   const type = mediaKind(filePath);
   if (!type) {
@@ -75,7 +98,7 @@ async function describeMedia(filePath) {
   if (type === 'video' && !picture) throw new Error('No video stream found');
   if (type === 'image' && !picture) throw new Error('Could not read image size');
 
-  const duration = type === 'image' ? null : Number(probed.format?.duration);
+  const duration = mediaDuration(probed, type, picture, audio);
   return {
     type,
     path: filePath,
